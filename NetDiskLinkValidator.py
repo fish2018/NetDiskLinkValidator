@@ -3,8 +3,55 @@ import json
 import re
 import asyncio
 from urllib.parse import quote
+from bs4 import BeautifulSoup
 
 
+# UC网盘有效性检测函数（修复版本）
+async def check_uc(share_id):
+    url = f"https://drive.uc.cn/s/{share_id}"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Linux; Android 10; SM-G975F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/87.0.4280.101 Mobile Safari/537.36",
+        "Host": "drive.uc.cn",
+        "Referer": url,
+        "Origin": "https://drive.uc.cn",
+    }
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, headers=headers, timeout=10)
+            # print(f"UC链接: {url}, 状态码: {response.status_code}")
+            if response.status_code != 200:
+                # print("状态码非200，判断为无效")
+                return False
+
+            soup = BeautifulSoup(response.text, 'html.parser')
+            page_text = soup.get_text(strip=True)
+            # print(f"页面文本摘录: {page_text[:100]}...")  # 调试用，显示前100字符
+
+            # 检查错误提示
+            error_keywords = ["失效", "不存在", "违规", "删除", "已过期", "被取消"]
+            if any(keyword in page_text for keyword in error_keywords):
+                # print("检测到错误关键词，判断为无效")
+                return False
+
+            # 检查是否需要访问码（有效但需密码）
+            if soup.select_one(".main-body .input-wrap input"):
+                print("发现访问码输入框，判断为有效（需密码）")
+                return True
+
+            # 检查是否包含文件列表或分享内容（有效）
+            if "文件" in page_text or "分享" in page_text or soup.select_one(".file-list"):
+                # print("检测到文件或分享内容，判断为有效")
+                return True
+
+            # 默认情况：未找到明确有效标志，保守判断为无效
+            # print("未找到有效标志，判断为无效")
+            return False
+    except httpx.RequestError as e:
+        print(f"UC检查错误 for {share_id}: {str(e)}")
+        return False
+
+
+# 阿里云盘有效性检测
 async def check_aliyun(share_id):
     api_url = "https://api.aliyundrive.com/adrive/v3/share_link/get_share_by_anonymous"
     headers = {"Content-Type": "application/json"}
@@ -21,6 +68,7 @@ async def check_aliyun(share_id):
         return True
 
 
+# 115网盘有效性检测
 async def check_115(share_id):
     api_url = "https://webapi.115.com/share/snap"
     params = {"share_code": share_id, "receive_code": ""}
@@ -34,6 +82,7 @@ async def check_115(share_id):
         return False
 
 
+# 夸克网盘有效性检测
 async def check_quark(share_id):
     api_url = "https://drive.quark.cn/1/clouddrive/share/sharepage/token"
     headers = {"Content-Type": "application/json"}
@@ -58,6 +107,7 @@ async def check_quark(share_id):
         return False
 
 
+# 123pan网盘有效性检测
 async def check_123pan(share_id):
     api_url = f"https://www.123pan.com/api/share/info?shareKey={share_id}"
     try:
@@ -71,10 +121,11 @@ async def check_123pan(share_id):
             if response_json.get('data', {}).get('HasPwd', False):
                 return True
             return True
-    except (httpx.RequestError, json.JSONDecodeError) as e:
+    except (httpx.RequestError, json.JSONDecodeError):
         return False
 
 
+# 天翼网盘有效性检测
 async def check_tianyi(share_id):
     api_url = "https://api.cloud.189.cn/open/share/getShareInfoByCodeV2.action"
     async with httpx.AsyncClient() as client:
@@ -88,6 +139,7 @@ async def check_tianyi(share_id):
         return True
 
 
+# 迅雷网盘有效性检测
 async def check_xunlei(share_id):
     token_url = "https://xluser-ssl.xunlei.com/v1/shield/captcha/init"
     headers = {"Content-Type": "application/json"}
@@ -123,6 +175,7 @@ async def check_xunlei(share_id):
         return True
 
 
+# 百度网盘有效性检测
 async def check_baidu(share_id):
     url = f"https://pan.baidu.com/s/{share_id}"
     headers = {
@@ -132,29 +185,24 @@ async def check_baidu(share_id):
         async with httpx.AsyncClient() as client:
             response = await client.get(url, headers=headers, follow_redirects=True)
             text = response.text
-
-            # 无效状态
             if any(x in text for x in ["分享的文件已经被取消", "分享已过期", "你访问的页面不存在", "你所访问的页面"]):
                 return False
-
-            # 需要提取码（有效）
             if "请输入提取码" in text or "提取文件" in text:
                 return True
-
-            # 公开分享（有效）
             if "过期时间" in text or "文件列表" in text:
                 return True
-
-            # 默认未知状态（可能是反爬或异常页面）
             return False
-    except httpx.RequestError as e:
-        print(f"Baidu check error for {share_id}: {str(e)}")
+    except httpx.RequestError:
         return False
 
 
+# 提取分享码函数（支持多种网盘）
 def extract_share_id(url):
-    """从链接中提取分享ID，支持多域名网盘"""
     net_disk_patterns = {
+        'uc': {
+            'domains': ['drive.uc.cn'],
+            'pattern': r"https?://drive\.uc\.cn/s/([a-zA-Z0-9]+)"
+        },
         'aliyun': {
             'domains': ['aliyundrive.com', 'alipan.com'],
             'pattern': r"https?://(?:www\.)?(?:aliyundrive|alipan)\.com/s/([a-zA-Z0-9]+)"
@@ -184,7 +232,6 @@ def extract_share_id(url):
             'pattern': r"https?://(?:[a-z]+\.)?(?:pan|yun)\.baidu\.com/(?:s/|share/init\?surl=)([a-zA-Z0-9-]+)"
         }
     }
-
     for net_disk, config in net_disk_patterns.items():
         if any(domain in url for domain in config['domains']):
             match = re.search(config['pattern'], url)
@@ -194,13 +241,14 @@ def extract_share_id(url):
     return None, None
 
 
+# 检查链接有效性（通用函数）
 async def check_url(url):
     share_id, service = extract_share_id(url)
     if not share_id or not service:
         print(f"无法识别的链接或网盘服务: {url}")
         return url, False
-
     check_functions = {
+        "uc": check_uc,
         "aliyun": check_aliyun,
         "quark": check_quark,
         "115": check_115,
@@ -209,25 +257,29 @@ async def check_url(url):
         "xunlei": check_xunlei,
         "baidu": check_baidu
     }
-
     if service in check_functions:
         result = await check_functions[service](share_id)
         return url, result
-    print(f"No checker function for service: {service}")
+    print(f"未找到服务 {service} 的检测函数")
     return url, False
 
 
+# 主函数
 async def main(urls):
     tasks = [check_url(url) for url in urls]
     results = await asyncio.gather(*tasks)
+    print("\n检测结果：")
     for url, result in results:
         print(f"{url} - {'有效' if result else '无效'}")
     return results
 
 
-
+# 运行测试
 if __name__ == "__main__":
     urls = [
+        # UC网盘
+        "https://drive.uc.cn/s/e1ebe95d144c4?public=1",  # UC网盘有效
+        "https://drive.uc.cn/s/m7and23e132a1?public=1",  # UC网盘无效
         # 阿里云
         'https://www.aliyundrive.com/s/hz1HHxhahsE',  # aliyundrive 公开分享
         'https://www.alipan.com/s/QbaHJ71QjV1',  # alipan 公开分享
