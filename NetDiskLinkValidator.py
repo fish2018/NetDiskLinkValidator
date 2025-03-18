@@ -229,7 +229,7 @@ def extract_share_id(url):
         },
         'baidu': {
             'domains': ['pan.baidu.com', 'yun.baidu.com'],
-            'pattern': r"https?://(?:[a-z]+\.)?(?:pan|yun)\.baidu\.com/(?:s/|share/init\?surl=)([a-zA-Z0-9-]+)"
+            'pattern': r"https?://(?:[a-z]+\.)?(?:pan|yun)\.baidu\.com/(?:s/|share/init\?surl=)([a-zA-Z0-9_-]+)(?:\?|$)"
         }
     }
     for net_disk, config in net_disk_patterns.items():
